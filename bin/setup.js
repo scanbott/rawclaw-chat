@@ -72,11 +72,30 @@ async function main() {
     process.exit(1);
   }
 
-  // 4. Anthropic API key
-  const anthropicKey = await askSecret('  Anthropic API key: ');
-  if (!anthropicKey) {
-    console.error('  Anthropic API key is required.');
-    process.exit(1);
+  // 4. Check Claude CLI
+  console.log('  [..] Checking Claude CLI...');
+  try {
+    const { execSync } = await import('child_process');
+    execSync('claude --version', { stdio: 'pipe' });
+    console.log('  [ok] Claude CLI found');
+
+    // Check if authenticated
+    try {
+      execSync('claude -p "test" --output-format json --max-turns 1', { stdio: 'pipe', timeout: 30000 });
+      console.log('  [ok] Claude CLI authenticated');
+    } catch {
+      console.log('');
+      console.log('  Claude CLI needs authentication. Run:');
+      console.log('    claude auth login');
+      console.log('');
+    }
+  } catch {
+    console.log('');
+    console.log('  Claude CLI not found. Install it:');
+    console.log('    npm install -g @anthropic-ai/claude-code');
+    console.log('  Then authenticate:');
+    console.log('    claude auth login');
+    console.log('');
   }
 
   // 5. Admin email
@@ -111,9 +130,6 @@ async function main() {
     `# Supabase`,
     `SUPABASE_URL=${supabaseUrl}`,
     `SUPABASE_SERVICE_KEY=${supabaseKey}`,
-    ``,
-    `# Anthropic`,
-    `ANTHROPIC_API_KEY=${anthropicKey}`,
     ``,
     `# Auth`,
     `AUTH_SECRET=${authSecret}`,
