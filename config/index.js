@@ -19,8 +19,6 @@ export function withThepopebot(nextConfig = {}) {
     ],
 serverExternalPackages: [
       ...(nextConfig.serverExternalPackages || []),
-      'better-sqlite3',
-      'drizzle-orm',
     ],
   };
 }
