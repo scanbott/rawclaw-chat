@@ -7,60 +7,17 @@ import { Messages } from './messages.js';
 import { ChatInput } from './chat-input.js';
 import { ChatHeader } from './chat-header.js';
 import { Greeting } from './greeting.js';
-import { CodeModeToggle } from './code-mode-toggle.js';
-import { DiffViewer } from './diff-viewer.js';
-import { getRepositories, getBranches, updateWorkspaceBranch } from '../actions.js';
 
-export function Chat({ chatId, initialMessages = [], workspace = null }) {
+export function Chat({ chatId, initialMessages = [] }) {
   const [input, setInput] = useState('');
   const [files, setFiles] = useState([]);
   const hasNavigated = useRef(false);
-  const [codeMode, setCodeMode] = useState(!!workspace);
-  const [codeModeType, setCodeModeType] = useState(() => {
-    if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem(`codeModeType:${chatId}`);
-      if (stored === 'plan' || stored === 'code') return stored;
-    }
-    return 'code';
-  });
-
-  // Persist codeModeType to localStorage per chat
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(`codeModeType:${chatId}`, codeModeType);
-    }
-  }, [chatId, codeModeType]);
-  const [repo, setRepo] = useState(workspace?.repo || '');
-  const [branch, setBranch] = useState(workspace?.branch || '');
-  const [workspaceState, setWorkspaceState] = useState(workspace);
-  const [diffStats, setDiffStats] = useState(null);
-  const [showDiff, setShowDiff] = useState(false);
-
-  // Auto-forward to interactive workspace — only on toggle, not on mount
-  const hasMounted = useRef(false);
-  useEffect(() => {
-    if (!hasMounted.current) {
-      hasMounted.current = true;
-      return;
-    }
-    if (workspaceState?.containerName && workspaceState?.id) {
-      window.location.href = `/code/${workspaceState.id}`;
-    }
-  }, [workspaceState?.containerName]);
-
-  const codeModeRef = useRef({ codeMode, codeModeType, repo, branch, workspaceId: workspaceState?.id });
-  codeModeRef.current = { codeMode, codeModeType, repo, branch, workspaceId: workspaceState?.id };
 
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: '/stream/chat',
-        body: () => ({
-          chatId,
-          ...(codeModeRef.current.codeMode && codeModeRef.current.repo && codeModeRef.current.branch
-            ? { codeMode: true, codeModeType: codeModeRef.current.codeModeType, repo: codeModeRef.current.repo, branch: codeModeRef.current.branch, workspaceId: codeModeRef.current.workspaceId }
-            : {}),
-        }),
+        body: () => ({ chatId }),
       }),
     [chatId]
   );
@@ -79,21 +36,6 @@ export function Chat({ chatId, initialMessages = [], workspace = null }) {
     transport,
     onError: (err) => console.error('Chat error:', err),
   });
-
-  // Fetch diff stats on mount (existing workspace) and when AI finishes responding
-  const prevStatus = useRef(status);
-  useEffect(() => {
-    if (!workspaceState?.id) return;
-    const isMount = prevStatus.current === status;
-    const isFinished = prevStatus.current !== 'ready' && status === 'ready';
-    if (isMount || isFinished) {
-      fetch(`/stream/workspace-diff/${workspaceState.id}`)
-        .then(r => r.json())
-        .then(r => { if (r.success) setDiffStats(r); })
-        .catch(() => {});
-    }
-    prevStatus.current = status;
-  }, [status, workspaceState?.id]);
 
   // After first message sent, update URL and notify sidebar
   useEffect(() => {
@@ -126,12 +68,9 @@ export function Chat({ chatId, initialMessages = [], workspace = null }) {
         body: JSON.stringify({ chatId, message: text }),
       })
         .then(res => res.json())
-        .then(({ title, codeWorkspaceId, featureBranch }) => {
+        .then(({ title }) => {
           if (title) {
-            window.dispatchEvent(new CustomEvent('chatTitleUpdated', { detail: { chatId, title, codeWorkspaceId } }));
-          }
-          if (codeWorkspaceId) {
-            setWorkspaceState({ id: codeWorkspaceId, featureBranch, repo, branch, containerName: null });
+            window.dispatchEvent(new CustomEvent('chatTitleUpdated', { detail: { chatId, title } }));
           }
         })
         .catch(err => console.error('Failed to finalize chat:', err));
@@ -142,13 +81,11 @@ export function Chat({ chatId, initialMessages = [], workspace = null }) {
     if (message.role === 'assistant') {
       regenerate({ messageId: message.id });
     } else {
-      // User message — find the next assistant message and regenerate it
       const idx = messages.findIndex((m) => m.id === message.id);
       const nextAssistant = messages.slice(idx + 1).find((m) => m.role === 'assistant');
       if (nextAssistant) {
         regenerate({ messageId: nextAssistant.id });
       } else {
-        // No assistant response yet — extract text and resend
         const text =
           message.parts
             ?.filter((p) => p.type === 'text')
@@ -166,76 +103,9 @@ export function Chat({ chatId, initialMessages = [], workspace = null }) {
   const handleEdit = useCallback((message, newText) => {
     const idx = messages.findIndex((m) => m.id === message.id);
     if (idx === -1) return;
-    // Truncate conversation to before this message, then send edited text
     setMessages(messages.slice(0, idx));
     sendMessage({ text: newText });
   }, [messages, setMessages, sendMessage]);
-
-  // Interactive mode is active if containerName is set
-  const isInteractiveActive = !!workspaceState?.containerName;
-  const [togglingMode, setTogglingMode] = useState(false);
-
-  const handleInteractiveToggle = useCallback(async () => {
-    if (!workspaceState?.id || togglingMode || isInteractiveActive) return;
-    setTogglingMode(true);
-    try {
-      const { startInteractiveMode } = await import('../../code/actions.js');
-      const result = await startInteractiveMode(workspaceState.id);
-      if (result.containerName) {
-        setWorkspaceState(prev => ({ ...prev, containerName: result.containerName }));
-      }
-    } catch (err) {
-      console.error('Failed to toggle mode:', err);
-    } finally {
-      setTogglingMode(false);
-    }
-  }, [workspaceState?.id, togglingMode, isInteractiveActive]);
-
-  // In code mode, disable send until repo+branch selected
-  const codeModeCanSend = !codeMode || (!!repo && !!branch);
-
-  const codeModeSettings = {
-    mode: codeModeType,
-    onModeChange: setCodeModeType,
-    isInteractiveActive,
-    onInteractiveToggle: handleInteractiveToggle,
-    togglingMode,
-  };
-
-  const codeModeToggle = (
-    <CodeModeToggle
-      enabled={codeMode}
-      onToggle={setCodeMode}
-      repo={repo}
-      onRepoChange={setRepo}
-      branch={branch}
-      onBranchChange={(newBranch) => {
-        setBranch(newBranch);
-        if (workspaceState?.id) {
-          updateWorkspaceBranch(workspaceState.id, newBranch);
-        }
-      }}
-      locked={messages.length > 0}
-      getRepositories={getRepositories}
-      getBranches={getBranches}
-      workspace={workspaceState}
-      isInteractiveActive={isInteractiveActive}
-      diffStats={diffStats}
-      onDiffStatsRefresh={async () => {
-        if (!workspaceState?.id) return null;
-        try {
-          const r = await fetch(`/stream/workspace-diff/${workspaceState.id}`);
-          const data = await r.json();
-          if (data.success) { setDiffStats(data); return data; }
-        } catch {}
-        return null;
-      }}
-      onShowDiff={() => setShowDiff(true)}
-      onWorkspaceUpdate={(containerName) => {
-        setWorkspaceState(prev => ({ ...prev, containerName }));
-      }}
-    />
-  );
 
   return (
     <div className="flex h-svh flex-col">
@@ -243,7 +113,7 @@ export function Chat({ chatId, initialMessages = [], workspace = null }) {
       {messages.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center px-2.5 md:px-6">
           <div className="w-full max-w-4xl">
-            <Greeting codeMode={codeMode} />
+            <Greeting />
             {error && (
               <div className="mt-4 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
                 {error.message || 'Something went wrong. Please try again.'}
@@ -258,120 +128,31 @@ export function Chat({ chatId, initialMessages = [], workspace = null }) {
                 stop={stop}
                 files={files}
                 setFiles={setFiles}
-                canSendOverride={codeModeCanSend ? undefined : false}
-                codeMode={codeMode}
-                codeModeSettings={codeModeSettings}
               />
-            </div>
-            <div className="mt-5 pb-8">
-              {codeModeToggle}
             </div>
           </div>
         </div>
       ) : (
         <div className="flex flex-1 flex-col min-h-0 overflow-hidden relative">
-          {showDiff && workspaceState?.id && (
-            <div className="absolute inset-0 z-10 bg-black/50" />
-          )}
-          {showDiff && workspaceState?.id ? (
-            <>
-              <div className="flex-1 min-h-0 z-20 p-0 md:p-4 flex flex-col">
-                <DiffViewer
-                  workspaceId={workspaceState.id}
-                  diffStats={diffStats}
-                  onClose={() => setShowDiff(false)}
-                />
+          <Messages messages={messages} status={status} onRetry={handleRetry} onEdit={handleEdit} />
+          {error && (
+            <div className="mx-auto w-full max-w-4xl px-2 md:px-4">
+              <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+                {error.message || 'Something went wrong. Please try again.'}
               </div>
-              <div className="z-20 px-4 pb-4">
-                {codeMode ? (
-                  <div className="mx-auto w-full max-w-4xl">
-                    <div className="rounded-t-xl border border-b-0 border-border px-3 py-2.5 bg-background">
-                      {codeModeToggle}
-                    </div>
-                    <ChatInput
-                      bare
-                      input={input}
-                      setInput={setInput}
-                      onSubmit={handleSend}
-                      status={status}
-                      stop={stop}
-                      files={files}
-                      setFiles={setFiles}
-                      disabled={isInteractiveActive}
-                      placeholder={isInteractiveActive ? 'Interactive mode is active.' : 'Send a message...'}
-                      className="rounded-t-none"
-                      codeMode={codeMode}
-                      codeModeSettings={codeModeSettings}
-                    />
-                  </div>
-                ) : (
-                  <ChatInput
-                    input={input}
-                    setInput={setInput}
-                    onSubmit={handleSend}
-                    status={status}
-                    stop={stop}
-                    files={files}
-                    setFiles={setFiles}
-                  />
-                )}
-              </div>
-            </>
-          ) : (
-            <>
-              <Messages messages={messages} status={status} onRetry={handleRetry} onEdit={handleEdit} />
-              {error && (
-                <div className="mx-auto w-full max-w-4xl px-2 md:px-4">
-                  <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
-                    {error.message || 'Something went wrong. Please try again.'}
-                  </div>
-                </div>
-              )}
-              {codeMode ? (
-                <div className="mx-auto w-full max-w-4xl px-4 pb-4 md:px-6">
-                  {isInteractiveActive && (
-                    <a
-                      href={`/code/${workspaceState?.id}`}
-                      className="flex items-center justify-center gap-2 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 mb-2 text-sm font-medium text-primary hover:bg-primary/10 transition-colors"
-                    >
-                      <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-                      Click here to access Interactive Mode
-                    </a>
-                  )}
-                  <div className="rounded-t-xl border border-b-0 border-border px-3 py-2.5">
-                    {codeModeToggle}
-                  </div>
-                  <ChatInput
-                    bare
-                    input={input}
-                    setInput={setInput}
-                    onSubmit={handleSend}
-                    status={status}
-                    stop={stop}
-                    files={files}
-                    setFiles={setFiles}
-                    disabled={isInteractiveActive}
-                    placeholder={isInteractiveActive ? 'Interactive mode is active.' : 'Send a message...'}
-                    className="rounded-t-none"
-                    codeMode={codeMode}
-                    codeModeSettings={codeModeSettings}
-                  />
-                </div>
-              ) : (
-                <div className="px-2.5 md:px-0">
-                  <ChatInput
-                    input={input}
-                    setInput={setInput}
-                    onSubmit={handleSend}
-                    status={status}
-                    stop={stop}
-                    files={files}
-                    setFiles={setFiles}
-                  />
-                </div>
-              )}
-            </>
+            </div>
           )}
+          <div className="px-2.5 md:px-0">
+            <ChatInput
+              input={input}
+              setInput={setInput}
+              onSubmit={handleSend}
+              status={status}
+              stop={stop}
+              files={files}
+              setFiles={setFiles}
+            />
+          </div>
         </div>
       )}
     </div>
