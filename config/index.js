@@ -1,20 +1,20 @@
 /**
- * Next.js config wrapper for thepopebot.
+ * Next.js config wrapper for rawclaw.
  * Enables instrumentation hook for cron scheduling on server start.
  *
  * Usage in user's next.config.mjs:
- *   import { withThepopebot } from '@/config/index';
- *   export default withThepopebot({});
+ *   import { withRawclaw } from '@/config/index';
+ *   export default withRawclaw({});
  *
  * @param {Object} nextConfig - User's Next.js config
  * @returns {Object} Enhanced Next.js config
  */
-export function withThepopebot(nextConfig = {}) {
+export function withRawclaw(nextConfig = {}) {
   return {
     ...nextConfig,
     distDir: process.env.NEXT_BUILD_DIR || '.next',
     transpilePackages: [
-      'thepopebot',
+      'rawclaw',
       ...(nextConfig.transpilePackages || []),
     ],
 serverExternalPackages: [
@@ -22,3 +22,6 @@ serverExternalPackages: [
     ],
   };
 }
+
+// Keep backward compat alias
+export const withThepopebot = withRawclaw;
