@@ -1,56 +1,35 @@
-# lib/ai/ — LLM Integration
+# lib/ai/ -- LLM Integration
 
-## Agent Types
+## Architecture
 
-Two agent types, both using `createReactAgent` from `@langchain/langgraph/prebuilt` with `SqliteSaver` for conversation memory:
+Direct Anthropic SDK integration (no LangChain/LangGraph). Single agent type with tool call loop.
 
-**Chat Agent** — singleton via `getChatAgent()`:
-- System prompt: `config/JOB_PLANNING.md` (rendered fresh each invocation via `render_md()`)
-- Tools: `create_job`, `get_job_status`, `plan_popebot_updates`, `get_skill_building_guide`, `get_skill_details`, + web search (if provider supports it)
-- Call `resetChatAgent()` to clear the singleton (required if hot-reloading)
+**Chat Agent** -- `createChatStream()` in `agent.js`:
+- System prompt: built dynamically from company settings + knowledge base context (`knowledge-context.js`)
+- Tools: `search_knowledge` (queries Supabase knowledge_docs), `launch_agent` (placeholder for future agent tasks)
+- Streams responses via Anthropic SDK `messages.stream()`
+- Tool call loop handled in `index.js` -- continues calling the model until no more tool_use blocks
 
-**Code Agent** — per-workspace via `getCodeAgent({ repo, branch, workspaceId, chatId })`:
-- System prompt: `config/CODE_PLANNING.md` (rendered fresh each invocation)
-- Tools: `start_coding` (bound to workspace), + web search
-- Keyed by `repo_branch_workspaceId` in an internal Map
+## Files
 
-## Adding a New Tool
+- `agent.js` -- Anthropic SDK client, tool definitions, `createChatStream()`, `handleToolCall()`
+- `index.js` -- `chatStream()` async generator (tool loop, DB persistence, auto-title), `persistMessage()`, `autoTitle()`
+- `knowledge-context.js` -- `buildSystemPrompt()`, `getRelevantKnowledge()` -- fetches company settings and knowledge docs
+- `model.js` -- `getModelConfig()` -- returns resolved provider/model/maxTokens from config
+- `tools.js` -- Re-exports `getTools()` from agent.js
+- `web-search.js` -- `isWebSearchAvailable()` check used by render-md.js
 
-1. Define in `tools.js` with Zod schema (use `tool()` from `@langchain/core/tools`)
-2. Add to the agent's tools array in `agent.js`
-3. Call `resetChatAgent()` if the chat agent needs to pick up the new tool without restart
+## Model Configuration
 
-## Model Resolution
-
-`createModel()` in `model.js` resolves provider/model at agent creation time (singleton for chat agent). Provider determined by `LLM_PROVIDER` env var, model by `LLM_MODEL`. Changing these requires restart.
-
-### LLM Providers
-
-| Provider | `LLM_PROVIDER` | Default Model | Required Env |
-|----------|----------------|---------------|-------------|
-| Anthropic | `anthropic` (default) | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` |
-| OpenAI | `openai` | `gpt-4o` | `OPENAI_API_KEY` |
-| Google | `google` | `gemini-2.5-flash` | `GOOGLE_API_KEY` |
-| Custom | `custom` | — | `OPENAI_BASE_URL`, `CUSTOM_API_KEY` (optional) |
-
-`LLM_MAX_TOKENS` defaults to 4096. Web search available for `anthropic` and `openai` providers only (disable with `WEB_SEARCH=false`).
-
-> **Google model compatibility note:** `gemini-2.5-pro` and all `gemini-3.*` models require `thought_signature` round-tripping that `@langchain/google-genai` does not yet support. Setting `LLM_MODEL` to one of these will automatically fall back to `gemini-2.5-flash` at runtime with a warning. Supported Gemini models: `gemini-2.5-flash` (default), `gemini-2.5-flash-lite`. Full support for thinking models is tracked in issue #201.
+| Config Key | Default | Description |
+|---|---|---|
+| `LLM_PROVIDER` | `anthropic` | Provider slug |
+| `LLM_MODEL` | `claude-sonnet-4-20250514` | Model ID |
+| `LLM_MAX_TOKENS` | `4096` | Max response tokens |
+| `ANTHROPIC_API_KEY` | -- | Required API key |
 
 ## Chat Streaming
 
-`chatStream()` in `index.js` yields chunks: `{ type: 'text', content }`, `{ type: 'tool-call', name, args }`, `{ type: 'tool-result', name, result }`. Called by `lib/chat/api.js` (the `/stream/chat` endpoint).
+`chatStream()` in `index.js` yields chunks: `{ type: 'text', text }`, `{ type: 'tool-call', toolCallId, toolName, args }`, `{ type: 'tool-result', toolCallId, result }`. Called by `lib/chat/api.js` (the `/stream/chat` endpoint).
 
-## Headless Stream Parser (headless-stream.js)
-
-Three-layer parser for Claude Code agents running in headless Docker containers:
-
-1. **Docker frame decoder** — Parses 8-byte multiplexed stream headers (type + size), extracts stdout frames, discards stderr. Buffers incomplete frames across chunks.
-2. **NDJSON splitter** — Accumulates decoded UTF-8, splits on newlines. Holds incomplete trailing lines for next chunk.
-3. **Event mapper** (`mapLine()`) — Converts each line to chat events:
-   - `assistant` messages: `text` blocks → `{ type: 'text' }`, `tool_use` blocks → `{ type: 'tool-call' }`
-   - `user` messages: `tool_result` blocks → `{ type: 'tool-result' }` (priority: stdout > string content > array)
-   - `result` messages: → `{ type: 'text', _resultSummary }` (injected into LangGraph memory)
-   - Non-JSON lines (e.g. `NO_CHANGES`, `AGENT_FAILED`): wrapped as plain text events
-
-`parseHeadlessStream(dockerLogStream)` is an async generator consuming `http.IncomingMessage`. `mapLine()` is also reused by `lib/cluster/stream.js` for worker log parsing.
+The tool call loop works by accumulating tool_use blocks from the stream, executing each tool via `handleToolCall()`, appending results as a user message with `tool_result` blocks, and re-calling the model until no more tool_use blocks appear.
