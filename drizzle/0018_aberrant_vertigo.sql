@@ -1,1 +1,0 @@
-ALTER TABLE `code_workspaces` ADD `has_changes` integer DEFAULT 0 NOT NULL;

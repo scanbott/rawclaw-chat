@@ -1,12 +1,6 @@
 /**
- * Next.js instrumentation hook for thepopebot.
+ * Next.js instrumentation hook for rawclaw-chat.
  * This file is loaded by Next.js on server start when instrumentationHook is enabled.
- *
- * Users should create an instrumentation.js in their project root that imports this:
- *
- *   export { register } from '@/config/instrumentation';
- *
- * Or they can re-export and add their own logic.
  */
 
 let initialized = false;
@@ -20,12 +14,10 @@ export async function register() {
   const dotenv = await import('dotenv');
   dotenv.config();
 
-  // Skip database init and cron scheduling during `next build` —
-  // these are runtime-only concerns that keep the event loop alive
-  // and can cause build output corruption.
+  // Skip during `next build`
   if (process.argv.includes('build')) return;
 
-  // Set AUTH_URL from APP_URL so NextAuth redirects to the correct host (e.g., on sign-out)
+  // Set AUTH_URL from APP_URL so NextAuth redirects to the correct host
   if (process.env.APP_URL && !process.env.AUTH_URL) {
     process.env.AUTH_URL = process.env.APP_URL;
   }
@@ -39,36 +31,5 @@ export async function register() {
     throw new Error('AUTH_SECRET environment variable is required');
   }
 
-  // Initialize auth database
-  const { initDatabase } = await import('../lib/db/index.js');
-  initDatabase();
-
-  // Migrate env vars to DB on first run (idempotent)
-  try {
-    const { migrateEnvToDb } = await import('../lib/db/config.js');
-    migrateEnvToDb();
-  } catch (err) {
-    console.warn('Config migration:', err.message);
-  }
-
-  // Start cron scheduler
-  const { loadCrons } = await import('../lib/cron.js');
-  loadCrons();
-
-  // Start built-in crons (version check)
-  const { startBuiltinCrons, setUpdateAvailable } = await import('../lib/cron.js');
-  startBuiltinCrons();
-
-  // Warm in-memory flag from DB (covers the window before the async cron fetch completes)
-  try {
-    const { getAvailableVersion } = await import('../lib/db/update-check.js');
-    const stored = getAvailableVersion();
-    if (stored) setUpdateAvailable(stored);
-  } catch {}
-
-  // Start cluster worker runtime (crons + webhook registration)
-  const { startClusterRuntime } = await import('../lib/cluster/runtime.js');
-  startClusterRuntime();
-
-  console.log('thepopebot initialized');
+  console.log('rawclaw-chat initialized');
 }
